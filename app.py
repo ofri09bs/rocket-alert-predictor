@@ -4,6 +4,7 @@ import numpy as np
 import joblib
 import requests
 from datetime import datetime
+import pytz
 
 # UI Setup
 st.set_page_config(page_title="Iron Dome C2 System", page_icon="🛡️", layout="wide")
@@ -55,7 +56,9 @@ with st.sidebar:
     st.header("🕹️ COMMAND PANEL")
     selected_city = st.selectbox("TARGET LOCATION", sorted(encoder.classes_))
     
-    current_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    # Force the server to use Israel Time
+    israel_tz = pytz.timezone('Asia/Jerusalem')
+    current_time = datetime.now(israel_tz).strftime("%Y-%m-%d %H:%M:%S")
     time_str = st.text_input("REFERENCE TIME", current_time)
     
     st.divider()
