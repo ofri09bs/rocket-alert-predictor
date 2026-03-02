@@ -124,16 +124,30 @@ if run_btn:
         prob = clf.predict_proba(X_in)[0][1]
         tactical_time = reg.predict(X_in)[0] # Raw minutes, no inversion needed!
 
-        # Smart UI Logic (Threshold set to a natural 30%)
-        if prob < 0.30:
+       # --- SMART UI LOGIC & MANUAL TWEAKS ---
+        
+        if prob < 0.40:
             is_safe = True
             display_time = "CLEAR"
         else:
             is_safe = False
-            if tactical_time >= 60:
-                display_time = f"{int(tactical_time/60)}h {int(tactical_time%60)}m"
+            
+            # --- THE TWEAK ---
+            # We apply a manual tweak to the raw regression output to create a more intuitive and tactically relevant time window for decision-makers.
+            # The tweak is based on the predicted probability of an event occurring within 6 hours.
+            
+            tweak_multiplier = (1.1 - prob)
+            adjusted_time = tactical_time * tweak_multiplier
+            
+            # Enforce a minimum actionable window of 2 minutes to avoid displaying unrealistic immediate threats
+            if adjusted_time < 2:
+                adjusted_time = 2
+                
+            # Format the adjusted time for display
+            if adjusted_time >= 60:
+                display_time = f"{int(adjusted_time/60)}h {int(adjusted_time%60)}m"
             else:
-                display_time = f"{int(tactical_time)} min"
+                display_time = f"{int(adjusted_time)} min"
 
         # Display Metrics
         c1, c2, c3 = st.columns(3)
