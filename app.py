@@ -2,11 +2,10 @@ import streamlit as st
 import pandas as pd
 import numpy as np
 import joblib
-import requests
-from datetime import datetime
 import pytz
+from datetime import datetime, timedelta
 
-# UI Setup
+# UI Setup & Custom Styling
 st.set_page_config(page_title="Iron Dome C2 System", page_icon="🛡️", layout="wide")
 
 st.markdown("""
@@ -24,7 +23,7 @@ st.markdown("""
     </style>
     """, unsafe_allow_html=True)
 
-# Load Models
+# Load Machine Learning Assets Securely
 @st.cache_resource
 def load_c2_assets():
     return (
@@ -38,31 +37,44 @@ def load_c2_assets():
 try:
     clf, reg, encoder, sys_mem, FEATURE_ORDER = load_c2_assets()
 except Exception as e:
-    st.error(f"System initialization failed. {e}")
+    st.error(f"System initialization failed. Ensure all .joblib files are present. {e}")
     st.stop()
 
-# Live API Function
+# --- LIVE GITHUB INGESTION ENGINE ---
+# Cache data for 60 seconds to prevent rate-limiting from GitHub
+@st.cache_data(ttl=60)
 def fetch_live_country_load():
+    csv_url = "https://raw.githubusercontent.com/yuval-harpaz/alarms/master/data/alarms.csv"
     try:
-        url = "https://www.oref.org.il/WarningMessages/alert/alerts.json"
-        headers = {"User-Agent": "Mozilla/5.0", "Referer": "https://www.oref.org.il/"}
-        r = requests.get(url, headers=headers, timeout=1.5)
-        return len(r.json().get('data', [])) if r.status_code == 200 else 0
-    except: 
+        # Load only the Time column to save memory and processing power
+        df = pd.read_csv(csv_url, usecols=[0], names=["Time"], skiprows=1)
+        df["Time"] = pd.to_datetime(df["Time"], errors="coerce")
+        
+        # Calculate the exact time 60 minutes ago in Israel time
+        israel_tz = pytz.timezone('Asia/Jerusalem')
+        one_hour_ago = datetime.now(israel_tz).replace(tzinfo=None) - timedelta(hours=1)
+        
+        # Filter for alerts that happened in the last hour
+        recent_alerts = df[df["Time"] >= one_hour_ago]
+        return len(recent_alerts)
+        
+    except Exception as e:
+        print(f"Sync error with GitHub Data Stream: {e}")
         return 0
 
-# Sidebar C2 Controls
+# --- C2 COMMAND PANEL (SIDEBAR) ---
 with st.sidebar:
     st.header("🕹️ COMMAND PANEL")
     selected_city = st.selectbox("TARGET LOCATION", sorted(encoder.classes_))
     
-    # Force the server to use Israel Time
+    # Force Israel Timezone to prevent server discrepancies
     israel_tz = pytz.timezone('Asia/Jerusalem')
     current_time = datetime.now(israel_tz).strftime("%Y-%m-%d %H:%M:%S")
     time_str = st.text_input("REFERENCE TIME", current_time)
     
     st.divider()
     
+    # War-Game Simulation Toggle
     sim_mode = st.toggle("ACTIVATE SIMULATION", False)
     if sim_mode:
         live_load = st.slider("SIMULATED NATIONAL LOAD", 0, 300, 80)
@@ -72,22 +84,22 @@ with st.sidebar:
         live_load = fetch_live_country_load()
         local_load_24h_sim = 0 
         if live_load > 0:
-            st.error(f"🔴 LIVE ALERT: {live_load} ACTIVE ZONES")
+            st.error(f"🔴 LIVE ALERT: {live_load} ACTIVE ZONES (Past Hour)")
         else:
-            st.success("🟢 LIVE STATUS: CLEAR")
+            st.success("🟢 LIVE STATUS: CLEAR NATIONWIDE")
 
     run_btn = st.button("EXECUTE ANALYSIS", use_container_width=True)
 
-# Main Dashboard
+# --- MAIN DASHBOARD ENGINE ---
 st.title("🛡️ IRON DOME C2 SYSTEM")
-st.subheader("BALANCED TACTICAL ENGINE V7.0")
+st.subheader("PURE TACTICAL ENGINE V9.1 (LIVE GITHUB SYNC)")
 
 if run_btn:
     try:
         ref_time = pd.to_datetime(time_str)
         loc_idx = encoder.transform([selected_city])[0]
         
-        # Data Extraction
+        # Pull Historical Details
         loc_total = sys_mem['counts'].get(loc_idx, 0)
         risk_ratio = sys_mem['ratios'].get(loc_idx, 0.0001)
         is_rare = 1 if loc_total < 15 else 0
@@ -95,7 +107,7 @@ if run_btn:
         last_t = sys_mem['time'].get(loc_idx)
         prev_gap = sys_mem['gap'].get(loc_idx, 0)
         
-        # Context Math
+        # Dynamic Context Math
         min_since = (ref_time - last_t).total_seconds() / 60.0 if last_t else -1
         accel = min_since - prev_gap if min_since > 0 else 0
         local_impact = live_load * risk_ratio
@@ -105,7 +117,7 @@ if run_btn:
         else:
             local_alerts_24h = local_load_24h_sim
 
-        # Build feature array
+        # Construct exact feature map for the model
         input_dict = {
             "Location_Encoded": loc_idx,
             "Hour_sin": np.sin(2 * np.pi * ref_time.hour / 24.0),
@@ -120,44 +132,40 @@ if run_btn:
         }
         X_in = pd.DataFrame([input_dict])[FEATURE_ORDER]
 
-        # Execute Raw Predictions
+        # Execute Predictive Models
         prob = clf.predict_proba(X_in)[0][1]
-        tactical_time = reg.predict(X_in)[0] # Raw minutes, no inversion needed!
+        tactical_time = reg.predict(X_in)[0] # Raw predicted minutes
 
-       # --- SMART UI LOGIC & MANUAL TWEAKS ---
-        
+        # --- SMART UI LOGIC & MANUAL TWEAKS ---
         if prob < 0.40:
             is_safe = True
             display_time = "CLEAR"
         else:
             is_safe = False
             
-            # --- THE TWEAK ---
-            # We apply a manual tweak to the raw regression output to create a more intuitive and tactically relevant time window for decision-makers.
-            # The tweak is based on the predicted probability of an event occurring within 6 hours.
-            
-            tweak_multiplier = (1.1 - prob)
+            # The Tweak: Compress time proportionally to the danger probability
+            tweak_multiplier = (1.01 - prob)
             adjusted_time = tactical_time * tweak_multiplier
             
-            # Enforce a minimum actionable window of 2 minutes to avoid displaying unrealistic immediate threats
+            # Hard floor to prevent zero/negative times
             if adjusted_time < 2:
                 adjusted_time = 2
                 
-            # Format the adjusted time for display
+            # Clean formatting
             if adjusted_time >= 60:
                 display_time = f"{int(adjusted_time/60)}h {int(adjusted_time%60)}m"
             else:
                 display_time = f"{int(adjusted_time)} min"
 
-        # Display Metrics
+        # Display Live Metrics
         c1, c2, c3 = st.columns(3)
-        c1.metric("6H THREAT PROBABILITY", f"{(prob*100 + 30):.1f}%") # Adding 30% natural geographic baseline to the raw model output
+        c1.metric("6H THREAT PROBABILITY", f"{prob*100:.1f}%")
         c2.metric("ESTIMATED WINDOW", display_time)
         c3.metric("GEOGRAPHIC PROFILE", f"{loc_total} Historical Hits")
 
         st.markdown("---")
         
-        # Briefing Card
+        # Threat Intelligence Card
         card_class = "safe-card" if is_safe else "danger-card"
         threat_status = "STABLE / CLEAR" if is_safe else "ELEVATED COMBAT READINESS"
         
@@ -167,8 +175,8 @@ if run_btn:
                 <p>System analysis finalized for reference time: <b>{ref_time}</b>.</p>
                 <ul>
                     <li><b>Operational Status:</b> {threat_status}</li>
-                    <li><b>Model Confidence:</b> Utilizing pure probability baseline with natural geographic weighting.</li>
-                    <li><b>System Calibration:</b> Synchronized using {live_load} active national threats.</li>
+                    <li><b>Live Sync:</b> Fetching live payload securely via decentralized datastream.</li>
+                    <li><b>System Calibration:</b> Adjusted using {live_load} active national threats in the past 60 minutes.</li>
                 </ul>
             </div>
         """, unsafe_allow_html=True)
@@ -177,4 +185,4 @@ if run_btn:
         st.error(f"Tactical Engine Error: {e}")
 
 st.divider()
-st.caption("C2 PROTOCOL V7.0 | BALANCED RAW ENGINE | NATURAL PREDICTION OUTPUT")
+st.caption("C2 PROTOCOL V9.1 | LIVE GITHUB DATALINK | TWEAKED SYNCHRONIZATION")
